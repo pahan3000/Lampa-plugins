@@ -1,6 +1,5 @@
 /**
- * Lampa MPV Playlist Plugin v6
- * Queries TorrServer directly for active torrents
+ * Lampa MPV Playlist Plugin v7
  */
 (function () {
     'use strict';
@@ -17,7 +16,26 @@
             m3u += '#EXTINF:-1,' + (item.title || 'Episode ' + (i+1)) + '\n' + item.url + '\n';
         });
         var b64 = btoa(unescape(encodeURIComponent(m3u)));
-        window.location.href = SCHEME + '://' + b64 + '?start=0';
+        var url = SCHEME + '://' + b64 + '?start=0';
+
+        // Use iframe trick to trigger protocol handler without navigating away
+        var iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        try {
+            iframe.contentWindow.location.href = url;
+        } catch(e) {
+            // fallback: invisible anchor click
+            var a = document.createElement('a');
+            a.href = url;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function(){ document.body.removeChild(a); }, 1000);
+        }
+        setTimeout(function(){ 
+            try { document.body.removeChild(iframe); } catch(e){}
+        }, 2000);
     }
 
     function buildUrlsFromFiles(files, hash, host) {
@@ -34,10 +52,9 @@
         });
     }
 
-    // Get all torrents from TorrServer, find the one matching modal title, open playlist
-    function openPlaylistFromTorrServer(titleHint, rowCount) {
+    function openPlaylistFromTorrServer(rowCount) {
         var host = getTorrServerHost();
-        Lampa.Noty.show('Ищем торрент в TorrServer...');
+        Lampa.Noty.show('Получаем список файлов...');
 
         fetch(host + '/torrents', {
             method: 'POST',
@@ -48,34 +65,25 @@
         .then(function(list){
             if (!list || !list.length) { Lampa.Noty.show('TorrServer: нет активных торрентов'); return; }
 
-            // Try to match by title hint, or just take the one with most files matching row count
+            // Pick torrent whose file count matches visible rows, or most recent
             var match = null;
-
-            // Try exact/partial title match first
-            if (titleHint) {
-                list.forEach(function(t) {
-                    var tn = (t.title || t.name || '').toLowerCase();
-                    var th = titleHint.toLowerCase();
-                    if (tn.indexOf(th.substring(0,10)) !== -1 || th.indexOf(tn.substring(0,10)) !== -1) {
-                        match = t;
-                    }
-                });
-            }
-
-            // Fallback: pick torrent whose file count matches visible rows
-            if (!match) {
-                list.forEach(function(t) {
-                    var fc = (t.file_stats||t.files||[]).length;
-                    if (fc === rowCount) match = t;
-                });
-            }
-
-            // Last resort: most recently added
+            list.forEach(function(t) {
+                var fc = (t.file_stats||t.files||[]).length;
+                if (fc === rowCount) match = t;
+            });
             if (!match) match = list[list.length - 1];
 
             var files = match.file_stats || match.files || [];
-            if (!files.length) {
-                // Need to fetch full info
+
+            function proceed(files) {
+                var urls = buildUrlsFromFiles(files, match.hash, host);
+                Lampa.Noty.show('Открываем ' + urls.length + ' серий в MPV...');
+                setTimeout(function(){ openInMpv(urls); }, 500);
+            }
+
+            if (files.length) {
+                proceed(files);
+            } else {
                 fetch(host + '/torrents', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -83,16 +91,8 @@
                 })
                 .then(function(r){ return r.json(); })
                 .then(function(data){
-                    var f2 = data.file_stats || data.files || [];
-                    if (!f2.length) { Lampa.Noty.show('Файлы не найдены'); return; }
-                    var urls = buildUrlsFromFiles(f2, match.hash, host);
-                    Lampa.Noty.show('Открываем ' + urls.length + ' серий в MPV...');
-                    setTimeout(function(){ openInMpv(urls); }, 800);
+                    proceed(data.file_stats || data.files || []);
                 });
-            } else {
-                var urls = buildUrlsFromFiles(files, match.hash, host);
-                Lampa.Noty.show('Открываем ' + urls.length + ' серий в MPV...');
-                setTimeout(function(){ openInMpv(urls); }, 800);
             }
         })
         .catch(function(e){ Lampa.Noty.show('Ошибка TorrServer: ' + e.message); });
@@ -101,7 +101,6 @@
     var btnAdded = false;
 
     function checkForFilesPopup() {
-        // Find the "Files" heading text node
         var filesHeading = null;
         $('h2, h3, .head__title, .modal__title, [class*="title"]').each(function() {
             var t = $(this).text().trim();
@@ -126,10 +125,6 @@
 
         btnAdded = true;
 
-        // Get torrent title from the subtitle line (e.g. "Widows Bay S01 WEB-DLRip LF")
-        var titleHint = container.find('[class*="sub"], [class*="desc"], [class*="info"]').first().text().trim();
-        if (!titleHint) titleHint = document.title || '';
-
         var btn = $('<div class="mpv-btn selector" style="'
             + 'margin:8px 14px 4px;padding:10px 16px;'
             + 'background:rgba(255,165,0,0.15);border:1px solid rgba(255,165,0,0.4);'
@@ -140,13 +135,13 @@
             + '</div>');
 
         btn.on('click', function() {
-            openPlaylistFromTorrServer(titleHint, rows.length);
+            openPlaylistFromTorrServer(rows.length);
         });
 
         rows.first().before(btn);
-        console.log('[MPV v6] injected, rows=' + rows.length + ', hint=' + titleHint);
+        console.log('[MPV v7] injected, rows=' + rows.length);
     }
 
     setInterval(checkForFilesPopup, 600);
-    console.log('[MPV Playlist v6] loaded ok');
+    console.log('[MPV Playlist v7] loaded ok');
 })();
