@@ -1,10 +1,11 @@
 /**
- * Lampa MPV Playlist Plugin v7
+ * Lampa MPV Playlist Plugin v8
+ * Sends playlist to local helper server on port 7777
  */
 (function () {
     'use strict';
 
-    var SCHEME = 'mpvplaylist';
+    var HELPER = 'http://127.0.0.1:7777';
 
     function getTorrServerHost() {
         return (Lampa.Storage.field('torrserver_url') || 'http://127.0.0.1:8090').replace(/\/$/, '');
@@ -15,27 +16,19 @@
         urls.forEach(function (item, i) {
             m3u += '#EXTINF:-1,' + (item.title || 'Episode ' + (i+1)) + '\n' + item.url + '\n';
         });
-        var b64 = btoa(unescape(encodeURIComponent(m3u)));
-        var url = SCHEME + '://' + b64 + '?start=0';
 
-        // Use iframe trick to trigger protocol handler without navigating away
-        var iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        try {
-            iframe.contentWindow.location.href = url;
-        } catch(e) {
-            // fallback: invisible anchor click
-            var a = document.createElement('a');
-            a.href = url;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(function(){ document.body.removeChild(a); }, 1000);
-        }
-        setTimeout(function(){ 
-            try { document.body.removeChild(iframe); } catch(e){}
-        }, 2000);
+        fetch(HELPER + '/play', {
+            method: 'POST',
+            headers: {'Content-Type': 'text/plain'},
+            body: m3u
+        })
+        .then(function(r){
+            if (r.ok) Lampa.Noty.show('MPV запущен с ' + urls.length + ' сериями!');
+            else Lampa.Noty.show('Helper ответил ошибкой: ' + r.status);
+        })
+        .catch(function(e){
+            Lampa.Noty.show('Helper недоступен. Запустите mpv_helper.py');
+        });
     }
 
     function buildUrlsFromFiles(files, hash, host) {
@@ -63,9 +56,8 @@
         })
         .then(function(r){ return r.json(); })
         .then(function(list){
-            if (!list || !list.length) { Lampa.Noty.show('TorrServer: нет активных торрентов'); return; }
+            if (!list || !list.length) { Lampa.Noty.show('TorrServer: нет торрентов'); return; }
 
-            // Pick torrent whose file count matches visible rows, or most recent
             var match = null;
             list.forEach(function(t) {
                 var fc = (t.file_stats||t.files||[]).length;
@@ -73,14 +65,12 @@
             });
             if (!match) match = list[list.length - 1];
 
-            var files = match.file_stats || match.files || [];
-
             function proceed(files) {
                 var urls = buildUrlsFromFiles(files, match.hash, host);
-                Lampa.Noty.show('Открываем ' + urls.length + ' серий в MPV...');
-                setTimeout(function(){ openInMpv(urls); }, 500);
+                openInMpv(urls);
             }
 
+            var files = match.file_stats || match.files || [];
             if (files.length) {
                 proceed(files);
             } else {
@@ -90,9 +80,7 @@
                     body: JSON.stringify({action: 'get', hash: match.hash})
                 })
                 .then(function(r){ return r.json(); })
-                .then(function(data){
-                    proceed(data.file_stats || data.files || []);
-                });
+                .then(function(data){ proceed(data.file_stats || data.files || []); });
             }
         })
         .catch(function(e){ Lampa.Noty.show('Ошибка TorrServer: ' + e.message); });
@@ -139,9 +127,8 @@
         });
 
         rows.first().before(btn);
-        console.log('[MPV v7] injected, rows=' + rows.length);
     }
 
     setInterval(checkForFilesPopup, 600);
-    console.log('[MPV Playlist v7] loaded ok');
+    console.log('[MPV Playlist v8] loaded ok');
 })();
