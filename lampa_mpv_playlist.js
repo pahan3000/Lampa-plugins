@@ -1,5 +1,5 @@
 /**
- * Lampa MPV Playlist Plugin v4
+ * Lampa MPV Playlist Plugin v5
  */
 (function () {
     'use strict';
@@ -38,7 +38,7 @@
             if (!vf.length) vf = files;
             var urls = vf.map(function(f){
                 var idx = f.id !== undefined ? f.id : f.index;
-                var name = (f.path||f.name||'').split('/').pop().replace(/\\/g,'').split('\\').pop();
+                var name = (f.path||f.name||'episode').split('/').pop().split('\\').pop();
                 return {
                     title: name,
                     url: host+'/stream/'+encodeURIComponent(name)+'?link='+encodeURIComponent(hash)+'&index='+idx+'&play'
@@ -49,84 +49,94 @@
         .catch(function(e){ Lampa.Noty.show('Ошибка: '+e.message); });
     }
 
-    // Capture hash from torrent events
-    Lampa.Listener.follow('torrent', function(e) {
+    function tryGetHash() {
+        if (currentHash) return currentHash;
         try {
-            var d = e.data || {};
-            if (d.hash) currentHash = d.hash;
-            else if (d.magnet) currentHash = d.magnet;
-            Lampa.Log && Lampa.Log.add && Lampa.Log.add('MPV', 'torrent event: '+e.type+' hash='+currentHash);
-        } catch(ex){}
+            var act = Lampa.Activity.active();
+            if (act) {
+                return act.hash || act.magnet
+                    || (act.torrent && (act.torrent.hash || act.torrent.magnet))
+                    || (act.item && act.item.hash)
+                    || '';
+            }
+        } catch(e) {}
+        return '';
+    }
+
+    // Capture hash from ALL lampa events
+    ['torrent','player','full'].forEach(function(evName) {
+        Lampa.Listener.follow(evName, function(e) {
+            try {
+                var d = e.data || e || {};
+                var h = d.hash || d.magnet
+                    || (d.torrent && (d.torrent.hash || d.torrent.magnet))
+                    || (d.item && d.item.hash)
+                    || '';
+                if (h) currentHash = h;
+            } catch(ex){}
+        });
     });
 
-    // Watch DOM for the Files popup
     var btnAdded = false;
 
     function checkForFilesPopup() {
-        // Look for any element containing the text "Files" as a heading
-        var headings = $('h2, .head__title, .modal__title, [class*="title"]');
         var filesHeading = null;
-        headings.each(function() {
-            if ($(this).text().trim() === 'Files' || $(this).text().trim() === 'Файлы') {
+        $('*').each(function() {
+            var t = $(this).text().trim();
+            if ((t === 'Files' || t === 'Файлы') && $(this).children().length === 0) {
                 filesHeading = $(this);
+                return false;
             }
         });
 
-        if (!filesHeading) {
-            btnAdded = false;
-            return;
-        }
+        if (!filesHeading) { btnAdded = false; return; }
         if (btnAdded) return;
 
-        // Find the container that holds the file rows
-        // Walk up from heading to find the modal/popup container
-        var container = filesHeading.closest('.modal, .layer--popup, .layer, [class*="popup"]');
-        if (!container.length) container = filesHeading.parent().parent();
+        var container = filesHeading.closest('.modal, .layer--popup, .layer, .popup');
+        if (!container.length) container = $('body');
 
-        // Count items that look like file rows (have a number badge 1,2,3...)
+        if (container.find('.mpv-btn').length) { btnAdded = true; return; }
+
         var rows = container.find('.selector').filter(function() {
-            return $(this).find('img').length > 0 || $(this).text().trim().length > 3;
+            return $(this).find('img').length > 0;
         });
-
         if (rows.length < 2) return;
-        if (container.find('.mpv-btn').length) return;
 
         btnAdded = true;
 
         var btn = $('<div class="mpv-btn selector" style="'
-            + 'margin:8px 14px 2px;padding:11px 16px;'
-            + 'background:rgba(255,165,0,0.18);border:1px solid rgba(255,165,0,0.5);'
+            + 'margin:8px 14px 4px;padding:10px 16px;'
+            + 'background:rgba(255,165,0,0.15);border:1px solid rgba(255,165,0,0.4);'
             + 'border-radius:6px;cursor:pointer;display:flex;align-items:center;'
-            + 'gap:10px;font-size:14px;color:#fff;box-sizing:border-box;">'
-            + '<svg width="18" height="18" viewBox="0 0 24 24" fill="orange">'
-            + '<path d="M8 5v14l11-7z"/></svg>'
-            + 'Все серии в MPV (' + rows.length + ')'
+            + 'gap:8px;font-size:14px;color:#fff;box-sizing:border-box;width:calc(100% - 28px);">'
+            + '<span style="font-size:18px;line-height:1;">▶</span>'
+            + '<span>Все серии в MPV (' + rows.length + ')</span>'
             + '</div>');
 
         btn.on('click', function() {
-            if (currentHash) {
-                fetchAndOpen(currentHash);
+            var h = tryGetHash();
+            if (h) {
+                fetchAndOpen(h);
             } else {
-                // Try getting hash from Lampa storage/activity
-                try {
-                    var act = Lampa.Activity.active();
-                    var h = act && (act.hash || (act.torrent && act.torrent.hash));
-                    if (h) { currentHash = h; fetchAndOpen(h); }
-                    else Lampa.Noty.show('Hash не найден. Попробуйте открыть торрент заново.');
-                } catch(ex) {
-                    Lampa.Noty.show('Ошибка: ' + ex.message);
-                }
+                // Last resort: scrape visible row titles and build URLs by index
+                var urls = [];
+                rows.each(function(i) {
+                    var title = $(this).find('.torrent-item__title, .title, [class*="title"]').first().text().trim() || ('Episode ' + (i+1));
+                    var host = getTorrServerHost();
+                    urls.push({ title: title, url: host+'/stream/episode.mkv?index='+i+'&play' });
+                });
+                Lampa.Noty.show('Hash не найден, используем индексы...');
+                openInMpv(urls);
             }
         });
 
-        // Insert before first file row
         var firstRow = rows.first();
         if (firstRow.length) firstRow.before(btn);
         else container.prepend(btn);
 
-        console.log('[MPV v4] button injected, rows=' + rows.length + ' hash=' + currentHash);
+        console.log('[MPV v5] button injected rows='+rows.length);
     }
 
     setInterval(checkForFilesPopup, 600);
-    console.log('[MPV Playlist v4] loaded ok');
+    console.log('[MPV Playlist v5] loaded ok');
 })();
